@@ -12,6 +12,19 @@ import locale
 
 locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
 
+def get_available_frequencies(n_days: int) -> list[str]:
+    if n_days == 0:
+        n_days = 1
+    frequency_rules = [
+        ("1 min", 1, 3),
+        ("10 min", 1, 30),
+        ("1 hour", 1, 180),
+        ("1 day", 30, 4000),
+        ("1 week", 210, 8400),
+        ("1 month", 672, 8400)
+    ]
+    return [code for code, min_d, max_d in frequency_rules if min_d <= n_days <= max_d]
+
 def plural_day_ru(n):
     n = abs(n) % 100
     n1 = n % 10
@@ -46,6 +59,8 @@ def format_days_human(n_days):
     elif n_days >= 7:
         weeks = n_days // 7
         return f"{weeks} {'недели' if 2 <= weeks <= 4 else 'недель'}"
+    elif n_days == 0:
+        return "1 день"
     else:
         return f"{n_days} {'день' if n_days == 1 else 'дня' if 2 <= n_days <= 4 else 'дней'}"
 
@@ -66,9 +81,12 @@ def paint_plot(df, ticker, start_date, end_date, date_type, date_delta):
         x_date_format = '%b %Y'
 
     len_x = 15
-    if len(df) >= 1000:
+    if len(df) >= 500:
+        linewidth = 1.7
+    elif len(df) >= 1000:
         linewidth = 1.3
-        # len_x = 20
+    elif len(df) >= 2000:
+        linewidth = 1.1
     elif len(df) >= 4000:
         linewidth = 0.9
     else:
@@ -114,6 +132,9 @@ def paint_plot(df, ticker, start_date, end_date, date_type, date_delta):
 
     return buf
 
+
+
+
 # Функция для обработки кнопки "Назад"
 async def handle_back(update, context):
     query = update.callback_query
@@ -131,7 +152,7 @@ async def handle_back(update, context):
 # Главное меню бота
 async def start(update, context):
     keyboard_menu = [
-        [InlineKeyboardButton('📝 Ввести тикер вручную', callback_data='manual_input')],
+        [InlineKeyboardButton('📝 Ввести тикер вручную', callback_data='manual_ticker_input')],
         [InlineKeyboardButton('🏦 Выбрать из списка', callback_data='company_list')]
     ]
 
@@ -149,18 +170,57 @@ async def start(update, context):
     if not stack or stack[-1] != 'start':
         stack.append('start')
     
+async def handle_text(update, context):
+    input_query = context.user_data.get('awaiting_input_type')
 
-# Обработчик для ручного ввода тикера
-async def manual_input(update, context):
+    if input_query == 'ticker':
+        ticker = update.message.text.strip().upper()
+        try:
+            Ticker(ticker)
+            context.user_data['ticker'] = ticker
+            context.user_data.pop("awaiting_input_type", None)
+            await period_menu(update, context)
+        except Exception as e:
+            await update.message.reply_text(f'❌ Ошибка: {str(e)}.\nПроверьте тикер и попробуйте ещё раз')
+    
+    elif input_query == 'date_range':
+        text = update.message.text.strip()
+        try:
+            if len(text.split('-')) == 2:
+                start_str, end_str = text.split('-')
+            else:
+                start_str, end_str = text, text
+            start_date = datetime.strptime(start_str.strip(), '%d.%m.%Y').date()
+            end_date = datetime.strptime(end_str.strip(), "%d.%m.%Y").date()
+
+            if start_date > end_date:
+                await update.message.reply_text("❌ Начальная дата позже конечной.")
+                return
+            
+            context.user_data["start_end_dates"] = (start_date, end_date)
+            context.user_data.pop("awaiting_input_type", None)
+
+            await time_gap_menu(update, context, get_available_frequencies((end_date - start_date).days))
+
+        except Exception as e:
+            await update.message.reply_text(f'❌ Ошибка: {str(e)}.\nНеверный формат. Попробуй: 01.01.2024 - 10.01.2024')
+    else:
+        await update.message.reply_text("🤔 Не понимаю. Нажмите кнопку для ввода.")
+
+# Обработчики для ручного ввода
+async def manual_ticker_input(update, context):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text('✏️ Введите тикер (например: LKOH, TATN):',
                                   reply_markup=InlineKeyboardMarkup(
                                       [[InlineKeyboardButton('🔙 Назад', callback_data='go_back')]]
                                   ))
+    
+    context.user_data["awaiting_input_type"] = "ticker"
+
     stack = context.user_data.setdefault('history_steps', [])
-    if not stack or stack[-1] != 'manual_input':
-        stack.append('manual_input')
+    if not stack or stack[-1] != 'manual_ticker_input':
+        stack.append('manual_ticker_input')
 
 # Меню компаний (3 кнопки)
 async def company_list(update, context):
@@ -184,23 +244,11 @@ async def company_list(update, context):
         stack.append('company_list')
 
 async def handle_ticker(update, context):
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        ticker = query.data.replace('ticker_', '')
-        message = query.message
-    else:
-        ticker = update.message.text.strip().upper()
-        message = update.message
-
-    try:
-        Ticker(ticker)
-        context.user_data['ticker'] = ticker
-        await period_menu(update, context)
-
-    except Exception as e:
-        await message.reply_text(f'❌ Ошибка: {str(e)}.\nПроверьте тикер и попробуйте ещё раз')
-
+    query = update.callback_query
+    await query.answer()
+    ticker = query.data.replace('ticker_', '')
+    context.user_data['ticker'] = ticker
+    await period_menu(update, context)
 
 async def period_menu(update, context):
     if hasattr(update, 'callback_query') and update.callback_query:
@@ -214,7 +262,8 @@ async def period_menu(update, context):
         [InlineKeyboardButton('📅 1 день', callback_data='period_1day')],
         [InlineKeyboardButton('📆 1 месяц', callback_data='period_1month')],
         [InlineKeyboardButton('📅 1 год', callback_data='period_1year')],
-        [InlineKeyboardButton('📊 5 лет', callback_data='period_5years')]
+        [InlineKeyboardButton('📊 5 лет', callback_data='period_5years')],
+        [InlineKeyboardButton('📝 Ввести произвольный период', callback_data='manual_dates_input')]
     ]
 
     keyboard_period.append([InlineKeyboardButton('🔙 Назад', callback_data='go_back')])
@@ -226,6 +275,18 @@ async def period_menu(update, context):
     if not stack or stack[-1] != 'period_menu':
         stack.append('period_menu')
 
+async def manual_dates_input(update, context):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text('✏️ Введите даты (дату) в формате: ДД.ММ.ГГГГ - ДД.ММ.ГГГГ (ДД.ММ.ГГГГ)',
+                                reply_markup=InlineKeyboardMarkup(
+                                    [[InlineKeyboardButton('🔙 Назад', callback_data='go_back')]]
+                                ))
+    context.user_data["awaiting_input_type"] = "date_range"
+
+    stack = context.user_data.setdefault('history_steps', [])
+    if not stack or stack[-1] != 'manual_dates_input':
+        stack.append('manual_dates_input')
 
 async def handle_period(update, context):
     query = update.callback_query
@@ -252,10 +313,13 @@ async def handle_period(update, context):
     
     await time_gap_menu(update, context, time_gap_correct_buttons)
 
-
 async def time_gap_menu(update, context, list_of_buttons=None):
-    query = update.callback_query
-    await query.answer()
+    if hasattr(update, 'callback_query') and update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        edit_message = query.edit_message_text
+    else:
+        edit_message = update.message.reply_text
 
     time_gap_buttons = {'1 min': [InlineKeyboardButton('📅 1 минута', callback_data='time_gap:1min')],
                         '10 min': [InlineKeyboardButton('📅 10 минут', callback_data='time_gap:10min')],
@@ -268,7 +332,7 @@ async def time_gap_menu(update, context, list_of_buttons=None):
     keyboard_time_gap = [time_gap_buttons[time_gap] for time_gap in list_of_buttons] if list_of_buttons else list(time_gap_buttons.values())
     keyboard_time_gap.append([InlineKeyboardButton('🔙 Назад', callback_data='go_back')])
 
-    await query.edit_message_text(
+    await edit_message(
         '⏳ Выберите временной интервал:',
         reply_markup=InlineKeyboardMarkup(keyboard_time_gap)
     )
@@ -284,7 +348,6 @@ async def handle_time_gap(update, context):
     context.user_data['time_gap'] = time_gap
 
     await ticker_plot(update, context)
-
 
 async def ticker_plot(update, context):
     query = update.callback_query
@@ -303,8 +366,22 @@ async def ticker_plot(update, context):
         message_line = f'{start_date.strftime('%d.%m.%y')} - {end_date.strftime('%d.%m.%y')}'
     else:
         message_line = f'{start_date.strftime('%d.%m.%y')}'
+        
+    date_delta = date_delta if date_delta >= 1 else 1
 
     data = Ticker(ticker).candles(start = start_date, end = end_date, period=time_gap)
+
+    if data.empty:
+        await query.message.reply_text(
+            f"⚠️ По тикеру {ticker} нет данных в период {message_line}.\n"
+            f"Предположительно в данный период биржа не работала. Попробуйте изменить период."
+        )
+        # stack = context.user_data.get('history_steps', [])
+        # if stack:
+        #     stack.pop()
+        await handle_back(update, context)
+        return
+
     buf = paint_plot(data, ticker, start_date, end_date, time_gap, date_delta)
     
     await query.message.reply_photo(
@@ -315,7 +392,6 @@ async def ticker_plot(update, context):
     )
     buf.close()
 
-
 def main():
     load_dotenv()
     FINANCE_BOT_TOKEN = os.getenv("FINANCE_BOT_TOKEN")
@@ -324,12 +400,13 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(handle_back, pattern='^go_back$'))
-    application.add_handler(CallbackQueryHandler(manual_input, pattern='^manual_input$'))
+    application.add_handler(CallbackQueryHandler(manual_ticker_input, pattern='^manual_ticker_input$'))
     application.add_handler(CallbackQueryHandler(company_list, pattern='^company_list$'))
+    application.add_handler(CallbackQueryHandler(manual_dates_input, pattern='^manual_dates_input$'))
     application.add_handler(CallbackQueryHandler(handle_ticker, pattern='^ticker_'))
     application.add_handler(CallbackQueryHandler(handle_period, pattern='^period_'))
     application.add_handler(CallbackQueryHandler(handle_time_gap, pattern='^time_gap:'))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ticker))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     application.run_polling()
 
