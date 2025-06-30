@@ -8,37 +8,102 @@ from io import BytesIO
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 import os
+import locale
 
+locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
 
-def paint_plot(df, ticker, date_delta=30):
+def plural_day_ru(n):
+    n = abs(n) % 100
+    n1 = n % 10
+
+    if 11 <= n <= 19:
+        return "дней"
+    elif n1 == 1:
+        return "день"
+    elif 2 <= n1 <= 4:
+        return "дня"
+    else:
+        return "дней"
+
+def type_gap_to_ru(s):
+    dict_type_to_rus = {
+        '1min': 'минутный',
+        '10min': '10-минутный',
+        '1h': 'часовой',
+        '1d': 'дневной',
+        '1w': 'недельный',
+        '1m': 'месячный',
+    }
+    return dict_type_to_rus[s]
+
+def format_days_human(n_days):
+    if n_days >= 365 * 2:
+        years = n_days // 365
+        return f"{years} {'года' if 2 <= years <= 4 else 'лет'}"
+    elif n_days >= 60:
+        months = n_days // 30
+        return f"{months} {'месяца' if 2 <= months <= 4 else 'месяцев'}"
+    elif n_days >= 7:
+        weeks = n_days // 7
+        return f"{weeks} {'недели' if 2 <= weeks <= 4 else 'недель'}"
+    else:
+        return f"{n_days} {'день' if n_days == 1 else 'дня' if 2 <= n_days <= 4 else 'дней'}"
+
+def paint_plot(df, ticker, start_date, end_date, date_type, date_delta):
+    # плавающие гиперпараметры
+    days = plural_day_ru(date_delta)
+    gap_type = type_gap_to_ru(date_type)
+    if date_delta >= 1:
+        part_header_time_gap = f'{start_date.strftime('%d.%m.%y')} - {end_date.strftime('%d.%m.%y')}'
+    else:
+        part_header_time_gap = f'{start_date.strftime('%d.%m.%y')}'
+
+    if date_delta <= 3:
+        x_date_format = '%d.%m %H:%M'
+    elif date_delta <= 90:
+        x_date_format = '%d.%m.%y'
+    else:
+        x_date_format = '%b %Y'
+
+    len_x = 15
+    if len(df) >= 1000:
+        linewidth = 1.3
+        # len_x = 20
+    elif len(df) >= 4000:
+        linewidth = 0.9
+    else:
+        linewidth = 2
+
 
     plt.style.use('seaborn-v0_8-darkgrid')
     plt.rcParams['font.family'] = 'Times New Roman'
 
-    fig, ax = plt.subplots(figsize=(15, 7))
-    ax.plot(
-        df['begin'], 
-        df['open'], 
-        marker='o', 
-        markersize=5,
-        linewidth=2,
-        color="#49ac72",
-        label='Цена открытия'
-    )
+    fig, ax = plt.subplots(figsize=(len_x, 7))
 
-    # Настройки
-    ax.set_title(f'{ticker} | {date_delta} дней ({len(df)} рабочих дней) | Последняя цена: {df.iloc[-1, 2]:.2f}₽',
-                    fontsize=14, pad=20, fontweight='bold')
-    ax.set_xlabel('Дата', fontsize=14)
-    ax.set_ylabel('Цена (₽)', fontsize=14)
+    x = list(range(len(df)))
+    y = df['open'].values
+
+    # Основной график
+    ax.plot(x, y,
+            linewidth=linewidth,
+            color="#3d69b7",
+            label='Цена открытия')
+
+    # Подписи осей и заголовок
+    ax.set_title(f'{ticker} | {part_header_time_gap} | {format_days_human(date_delta)} ({len(df)} точек) | Последняя цена: {df.iloc[-1]["open"]:.1f}₽',
+                 fontsize=20, pad=20, fontweight='bold')
+    ax.set_xlabel('Дата', fontsize=16)
+    ax.set_ylabel('Цена (₽)', fontsize=16)
     ax.legend(fontsize=12)
     ax.grid(True, alpha=0.4)
 
-    # Форматирование дат
-    ax.xaxis.set_major_formatter(
-        plt.matplotlib.dates.DateFormatter('%d.%m.%Y')
-    )
-    plt.xticks(rotation=45)
+    # Отображаем подписи дат на оси X с шагом
+    step_x = max(len(df) // 10, 1)
+    xticks = x[::step_x]
+    xticklabels = df['begin'].dt.strftime(x_date_format)[::step_x]
+
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(xticklabels, rotation=45)
 
     plt.tight_layout()
 
@@ -170,16 +235,16 @@ async def handle_period(update, context):
     end_date = date.today()
     if period == '1day':
         start_date = end_date - timedelta(days=1)
-        time_gap_correct_buttons = ['10 min', '1 hour']
+        time_gap_correct_buttons = ['1 min', '10 min', '1 hour']
     elif period == '1month':
         start_date = end_date - timedelta(days=30)
-        time_gap_correct_buttons = ['1 day']
+        time_gap_correct_buttons = ['10 min', '1 hour', '1 day']
     elif period == '1year':
         start_date = end_date - timedelta(days=365)
-        time_gap_correct_buttons = ['1 day', '1 week']
+        time_gap_correct_buttons = ['1 hour', '1 day', '1 week']
     elif period == '5years':
         start_date = end_date - timedelta(days=5*365)
-        time_gap_correct_buttons = ['1 week', '1 month']
+        time_gap_correct_buttons = ['1 day', '1 week', '1 month']
 
     
     context.user_data['start_end_dates'] = (start_date, end_date)
@@ -233,12 +298,19 @@ async def ticker_plot(update, context):
     # price = data.iloc[-1, 0]
     # await message.reply_text(f"Цена открытия {ticker} ({data.iloc[-1, 7].strftime('%Y-%m-%d')}): {price:.2f} RUB")
 
+    date_delta = (end_date - start_date).days
+    if date_delta >= 1:
+        message_line = f'{start_date.strftime('%d.%m.%y')} - {end_date.strftime('%d.%m.%y')}'
+    else:
+        message_line = f'{start_date.strftime('%d.%m.%y')}'
+
     data = Ticker(ticker).candles(start = start_date, end = end_date, period=time_gap)
-    buf = paint_plot(data, ticker, (end_date - start_date).days)
+    buf = paint_plot(data, ticker, start_date, end_date, time_gap, date_delta)
     
     await query.message.reply_photo(
         photo=buf,
-        caption=f"📊 График {ticker} за {len(data)} дней\n"
+        caption=f"📊 График {ticker} за {message_line} ({date_delta} {plural_day_ru(date_delta)})\n"
+                f"📏 Частота данных: {type_gap_to_ru(time_gap)} формат\n"
                 f"🔄 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
     buf.close()
