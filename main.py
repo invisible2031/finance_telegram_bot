@@ -1,9 +1,9 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
-import yfinance as yf
+# import yfinance as yf
 from moexalgo import Ticker
-from datetime import date, time, datetime, timedelta
-import matplotlib.dates as mdates
+from datetime import date, datetime, timedelta
+# import matplotlib.dates as mdates
 from io import BytesIO
 import matplotlib.pyplot as plt
 from dotenv import load_dotenv
@@ -11,6 +11,12 @@ import os
 import locale
 
 locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
+
+def times_line_message(start, end, delta):
+    if delta >= 1:
+        return f'{start.strftime('%d.%m.%y')} - {end.strftime('%d.%m.%y')}'
+    else:
+        return f'{start.strftime('%d.%m.%y')}'
 
 def get_available_frequencies(n_days: int) -> list[str]:
     if n_days == 0:
@@ -361,15 +367,13 @@ async def ticker_plot(update, context):
     # price = data.iloc[-1, 0]
     # await message.reply_text(f"Цена открытия {ticker} ({data.iloc[-1, 7].strftime('%Y-%m-%d')}): {price:.2f} RUB")
 
-    date_delta = (end_date - start_date).days
-    if date_delta >= 1:
-        message_line = f'{start_date.strftime('%d.%m.%y')} - {end_date.strftime('%d.%m.%y')}'
-    else:
-        message_line = f'{start_date.strftime('%d.%m.%y')}'
-        
-    date_delta = date_delta if date_delta >= 1 else 1
-
     data = Ticker(ticker).candles(start = start_date, end = end_date, period=time_gap)
+    
+    date_delta = (end_date - start_date).days
+    
+    message_line = times_line_message(start_date, end_date, date_delta)
+        
+    date_delta = date_delta or 1
 
     if data.empty:
         await query.message.reply_text(
@@ -381,12 +385,28 @@ async def ticker_plot(update, context):
         #     stack.pop()
         await handle_back(update, context)
         return
+    
+    # Фактические доступные даты
+    actual_start = data['begin'].min().date()
+    actual_end = data['begin'].max().date()
+
+    # Уведомление, если вводимый период ≠ фактический
+    warning = ""
+    if start_date < actual_start - timedelta(30) or actual_end + timedelta(30) < end_date:
+        warning = (
+            f"⚠️ Данные доступны только за период: {actual_start.strftime('%d.%m.%y')} - {actual_end.strftime('%d.%m.%y')}.\n"
+            f"(Вы указали: {message_line})\n\n"
+        )
+        start_date, end_date = actual_start, actual_end
+        date_delta = (actual_end - actual_start).days or 1
+        message_line = times_line_message(start_date, end_date, date_delta)
 
     buf = paint_plot(data, ticker, start_date, end_date, time_gap, date_delta)
     
     await query.message.reply_photo(
         photo=buf,
-        caption=f"📊 График {ticker} за {message_line} ({date_delta} {plural_day_ru(date_delta)})\n"
+        caption=warning +
+                f"📊 График {ticker} за {message_line} ({date_delta} {plural_day_ru(date_delta)})\n"
                 f"📏 Частота данных: {type_gap_to_ru(time_gap)} формат\n"
                 f"🔄 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
