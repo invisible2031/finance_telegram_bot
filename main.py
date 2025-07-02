@@ -1,4 +1,4 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 # import yfinance as yf
 from moexalgo import Ticker
@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 from dotenv import load_dotenv
 import os
 import locale
+import pandas as pd
+from mplfinance.original_flavor import candlestick_ohlc
 
 locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
 
@@ -70,8 +72,9 @@ def format_days_human(n_days):
     else:
         return f"{n_days} {'день' if n_days == 1 else 'дня' if 2 <= n_days <= 4 else 'дней'}"
 
-def paint_plot(df, ticker, start_date, end_date, date_type, date_delta):
+def paint_plot(df, ticker, start_date, end_date, date_type, date_delta, chart_type='line'):
     # плавающие гиперпараметры
+    len_x = 15
     days = plural_day_ru(date_delta)
     gap_type = type_gap_to_ru(date_type)
     if date_delta >= 1:
@@ -86,49 +89,60 @@ def paint_plot(df, ticker, start_date, end_date, date_type, date_delta):
     else:
         x_date_format = '%b %Y'
 
-    len_x = 15
-    if len(df) >= 500:
-        linewidth = 1.7
-    elif len(df) >= 1000:
-        linewidth = 1.3
-    elif len(df) >= 2000:
-        linewidth = 1.1
-    elif len(df) >= 4000:
-        linewidth = 0.9
-    else:
-        linewidth = 2
+    df['begin'] = pd.to_datetime(df['begin'])
 
+    df['x'] = range(len(df))
 
     plt.style.use('seaborn-v0_8-darkgrid')
     plt.rcParams['font.family'] = 'Times New Roman'
-
     fig, ax = plt.subplots(figsize=(len_x, 7))
 
-    x = list(range(len(df)))
-    y = df['open'].values
 
-    # Основной график
-    ax.plot(x, y,
-            linewidth=linewidth,
-            color="#3d69b7",
-            label='Цена открытия')
+    if chart_type == 'line':
+        # плавающие гиперпараметры (line)
+        if len(df) >= 500:
+            linewidth = 1.7
+        elif len(df) >= 1000:
+            linewidth = 1.3
+        elif len(df) >= 2000:
+            linewidth = 1.1
+        elif len(df) >= 4000:
+            linewidth = 0.9
+        else:
+            linewidth = 2
 
-    # Подписи осей и заголовок
-    ax.set_title(f'{ticker} | {part_header_time_gap} | {format_days_human(date_delta)} ({len(df)} точек) | Последняя цена: {df.iloc[-1]["open"]:.1f}₽',
-                 fontsize=20, pad=20, fontweight='bold')
+        # x = list(range(len(df)))
+        x = df['x'].values
+        y = df['open'].values
+
+        # Основной график
+        ax.plot(x, y,
+                linewidth=linewidth,
+                color="#3d69b7",
+                label='Цена открытия')
+        ax.legend(fontsize=12)
+
+
+    elif chart_type == 'candles':
+        quotes = df[['x', 'open', 'high', 'low', 'close']].astype(float).values
+
+        candlestick_ohlc(ax, quotes, width=0.6,
+                        colorup='green', colordown='red', alpha=0.8)
+
+
+    ax.set_title(f'{ticker} | {part_header_time_gap} | {format_days_human(date_delta)} ({len(df)} точек) | Последняя цена: {df.iloc[-1]["close"]:.1f}₽',
+                fontsize=20, pad=20, fontweight='bold')
     ax.set_xlabel('Дата', fontsize=16)
     ax.set_ylabel('Цена (₽)', fontsize=16)
-    ax.legend(fontsize=12)
-    ax.grid(True, alpha=0.4)
 
     # Отображаем подписи дат на оси X с шагом
     step_x = max(len(df) // 10, 1)
-    xticks = x[::step_x]
+    xticks = df['x'][::step_x]
     xticklabels = df['begin'].dt.strftime(x_date_format)[::step_x]
 
+    ax.grid(True, alpha=0.4)
     ax.set_xticks(xticks)
     ax.set_xticklabels(xticklabels, rotation=45)
-
     plt.tight_layout()
 
     buf = BytesIO()
@@ -136,8 +150,26 @@ def paint_plot(df, ticker, start_date, end_date, date_type, date_delta):
     buf.seek(0)
     plt.close()
 
+
     return buf
 
+def get_chart_type_keyboard(current_type):
+    types = {
+        'line': '📈 Линия',
+        'candles': '🕯 Свечи',
+    }
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                f"{'✅ ' if t == current_type else ''}{label}",
+                callback_data=f'set_chart_type:{t}'
+            )
+            for t, label in types.items()
+        ]
+        # [InlineKeyboardButton("🔙 Назад", callback_data='go_back')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 
 
@@ -355,6 +387,35 @@ async def handle_time_gap(update, context):
 
     await ticker_plot(update, context)
 
+async def handler_chart_type_change(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    chart_type = query.data.replace("set_chart_type:", "")
+    context.user_data["chart_type"] = chart_type
+
+    data = context.user_data.get('data')
+    params = context.user_data.get('plot_params')
+
+    buf = paint_plot(
+        data,
+        ticker=params['ticker'],
+        start_date=params['start_date'],
+        end_date=params['end_date'],
+        date_type=params['date_type'],
+        date_delta=params['date_delta'],
+        chart_type=chart_type
+    )
+
+    await query.message.edit_media(
+        media=InputMediaPhoto(
+            media=buf,
+            caption=params['caption']
+        ),
+        reply_markup=get_chart_type_keyboard(chart_type)
+    )
+    buf.close()
+
 async def ticker_plot(update, context):
     query = update.callback_query
     await query.answer()
@@ -373,8 +434,6 @@ async def ticker_plot(update, context):
     
     message_line = times_line_message(start_date, end_date, date_delta)
         
-    date_delta = date_delta or 1
-
     if data.empty:
         await query.message.reply_text(
             f"⚠️ По тикеру {ticker} нет данных в период {message_line}.\n"
@@ -398,17 +457,36 @@ async def ticker_plot(update, context):
             f"(Вы указали: {message_line})\n\n"
         )
         start_date, end_date = actual_start, actual_end
-        date_delta = (actual_end - actual_start).days or 1
+        date_delta = (actual_end - actual_start).days
         message_line = times_line_message(start_date, end_date, date_delta)
 
     buf = paint_plot(data, ticker, start_date, end_date, time_gap, date_delta)
-    
-    await query.message.reply_photo(
-        photo=buf,
-        caption=warning +
+
+    date_delta = date_delta or 1
+
+    caption = warning + (
                 f"📊 График {ticker} за {message_line} ({date_delta} {plural_day_ru(date_delta)})\n"
                 f"📏 Частота данных: {type_gap_to_ru(time_gap)} формат\n"
                 f"🔄 Обновлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+    )
+
+    context.user_data['data'] = data
+    context.user_data['plot_params'] = {
+    'ticker': ticker,
+    'start_date': start_date,
+    'end_date': end_date,
+    'date_type': time_gap,
+    'date_delta': date_delta,
+    'caption': caption
+    }
+    context.user_data['chart_type'] = 'line'
+
+
+    
+    await query.message.reply_photo(
+        photo=buf,
+        caption=caption,
+        reply_markup=get_chart_type_keyboard(context.user_data['chart_type'])
     )
     buf.close()
 
@@ -426,6 +504,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_ticker, pattern='^ticker_'))
     application.add_handler(CallbackQueryHandler(handle_period, pattern='^period_'))
     application.add_handler(CallbackQueryHandler(handle_time_gap, pattern='^time_gap:'))
+    application.add_handler(CallbackQueryHandler(handler_chart_type_change, pattern='^set_chart_type:'))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     application.run_polling()
