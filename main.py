@@ -15,6 +15,12 @@ import numpy as np
 
 locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
 
+def clear_cache(context, pattern='chart_'):
+    """Удаляет все ключи, начинающиеся с pattern"""
+    keys = [k for k in context.user_data if k.startswith(pattern)]
+    for k in keys:
+        context.user_data.pop(k, None)
+
 def times_line_message(start, end, delta):
     if delta >= 1:
         return f'{start.strftime('%d.%m.%y')} - {end.strftime('%d.%m.%y')}'
@@ -424,18 +430,24 @@ async def handler_chart_type_change(update, context):
     chart_type = query.data.replace("set_chart_type:", "")
     context.user_data["chart_type"] = chart_type
 
-    data = context.user_data.get('data')
     params = context.user_data.get('plot_params')
+    # Проверяем кеш
+    cache_key = f'chart_{chart_type}'
+    if cache_key in context.user_data:
+        buf = BytesIO(context.user_data[cache_key])
 
-    buf = paint_plot(
-        data,
-        ticker=params['ticker'],
-        start_date=params['start_date'],
-        end_date=params['end_date'],
-        date_type=params['date_type'],
-        date_delta=params['date_delta'],
-        chart_type=chart_type
-    )
+    else:
+        data = context.user_data.get('data')
+        buf = paint_plot(
+            data,
+            ticker=params['ticker'],
+            start_date=params['start_date'],
+            end_date=params['end_date'],
+            date_type=params['date_type'],
+            date_delta=params['date_delta'],
+            chart_type=chart_type
+        )
+        context.user_data[cache_key] = buf.getvalue()  # Сохраняем в кеш
 
     await query.message.edit_media(
         media=InputMediaPhoto(
@@ -489,6 +501,9 @@ async def ticker_plot(update, context):
         start_date, end_date = actual_start, actual_end
         date_delta = (actual_end - actual_start).days
         message_line = times_line_message(start_date, end_date, date_delta)
+
+    # Чистим кеш
+    clear_cache(context)
 
     buf = paint_plot(data, ticker, start_date, end_date, time_gap, date_delta)
 
