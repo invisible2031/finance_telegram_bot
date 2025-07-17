@@ -11,6 +11,7 @@ import os
 import locale
 import pandas as pd
 from mplfinance.original_flavor import candlestick_ohlc
+import numpy as np
 
 locale.setlocale(locale.LC_ALL, 'ru_RU.UTF-8')
 
@@ -72,6 +73,28 @@ def format_days_human(n_days):
     else:
         return f"{n_days} {'день' if n_days == 1 else 'дня' if 2 <= n_days <= 4 else 'дней'}"
 
+def converter_to_heikin_ashi_dataframe(df):
+    open_, high, low, close = df['open'].values, df['high'].values, df['low'].values, df['close'].values
+    n = len(df)
+    ha_open = np.empty(n)
+    ha_close = (open_ + high + low + close) / 4
+
+    ha_open[0] = (open_[0] + close[0]) / 2
+    for i in range(1, n):
+        ha_open[i] = (ha_open[i-1] + ha_close[i-1]) / 2
+
+    ha_high = np.maximum.reduce([high, ha_open, ha_close])
+    ha_low = np.minimum.reduce([low, ha_open, ha_close])
+
+    ha_df = pd.DataFrame({
+        'begin': df['begin'],
+        'open': ha_open,
+        'high': ha_high,
+        'low': ha_low,
+        'close': ha_close
+    })
+    return ha_df
+
 def paint_plot(df, ticker, start_date, end_date, date_type, date_delta, chart_type='line'):
     # плавающие гиперпараметры
     len_x = 15
@@ -122,12 +145,17 @@ def paint_plot(df, ticker, start_date, end_date, date_type, date_delta, chart_ty
                 label='Цена открытия')
         ax.legend(fontsize=12)
 
-
     elif chart_type == 'candles':
         quotes = df[['x', 'open', 'high', 'low', 'close']].astype(float).values
-
         candlestick_ohlc(ax, quotes, width=0.6,
                         colorup='green', colordown='red', alpha=0.8)
+    
+    elif chart_type == 'heiken-ashi':
+        ha_df = converter_to_heikin_ashi_dataframe(df)
+        ha_df['x'] = range(len(ha_df))
+        quotes = ha_df[['x', 'open', 'high', 'low', 'close']].astype(float).values
+        candlestick_ohlc(ax, quotes, width=0.6,
+                         colorup='green', colordown='red', alpha=0.8)
 
 
     ax.set_title(f'{ticker} | {part_header_time_gap} | {format_days_human(date_delta)} ({len(df)} точек) | Последняя цена: {df.iloc[-1]["close"]:.1f}₽',
@@ -156,7 +184,7 @@ def paint_plot(df, ticker, start_date, end_date, date_type, date_delta, chart_ty
 def get_chart_type_keyboard(current_type):
     types = {
         'line': '📈 Линия',
-        'candles': '🕯 Свечи',
+        'candles': '🕯 Свечи'
     }
 
     keyboard = [
@@ -166,7 +194,9 @@ def get_chart_type_keyboard(current_type):
                 callback_data=f'set_chart_type:{t}'
             )
             for t, label in types.items()
-        ]
+        ],
+        [InlineKeyboardButton(f"{'✅ ' if 'heiken-ashi' == current_type else ''}🌀 Хейкен-Аши", callback_data='set_chart_type:heiken-ashi')]
+        # [InlineKeyboardButton('✅ 🌀 Хейкен-Аши' if current_type=='heiken_ashi' else '🌀 Хейкен-Аши', callback_data='set_chart_type:heiken-ashi')]
         # [InlineKeyboardButton("🔙 Назад", callback_data='go_back')]
     ]
     return InlineKeyboardMarkup(keyboard)
