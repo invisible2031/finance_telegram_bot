@@ -482,12 +482,17 @@ async def ticker_plot(update, context):
     context.user_data['chart_type'] = 'line'
 
 
-    
-    await query.message.reply_photo(
-        photo=buf,
-        caption=caption,
-        reply_markup=get_chart_type_keyboard(context.user_data['chart_type'])
-    )
+    if len(data) <= 220:
+        await query.message.reply_photo(
+            photo=buf,
+            caption=caption,
+            reply_markup=get_chart_type_keyboard(context.user_data['chart_type'])
+        )
+    else:
+        await query.message.reply_photo(
+            photo=buf,
+            caption=caption
+        )
     buf.close()
 
 def main():
